@@ -762,7 +762,7 @@ class FlaxCLIPVisionPreTrainedModel(FlaxPreTrainedModel):
         else:
             return random_params
 
-    def convert_to_scan(self) -> Self:
+    def convert_to_scan(self):
         if self.use_layer_scan:
             return self
         else:
@@ -1019,7 +1019,7 @@ class FlaxCLIPPreTrainedModel(FlaxPreTrainedModel):
 class FlaxCLIPTextModule(nn.Module):
     config: CLIPTextConfig
     dtype: jnp.dtype = jnp.float32
-    use_layer_scan: bool = False 
+    use_layer_scan: bool = False
 
     def setup(self):
         self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
@@ -1080,7 +1080,9 @@ class FlaxCLIPVisionModule(nn.Module):
     use_layer_scan: bool = False
 
     def setup(self):
-        self.vision_model = FlaxCLIPVisionTransformer(self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
+        self.vision_model = FlaxCLIPVisionTransformer(
+            self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan
+        )
 
     def __call__(
         self,
@@ -1147,7 +1149,9 @@ class FlaxCLIPModule(nn.Module):
         self.vision_embed_dim = vision_config.hidden_size
 
         self.text_model = FlaxCLIPTextTransformer(text_config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
-        self.vision_model = FlaxCLIPVisionTransformer(vision_config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
+        self.vision_model = FlaxCLIPVisionTransformer(
+            vision_config, dtype=self.dtype, use_layer_scan=self.use_layer_scan
+        )
 
         self.visual_projection = nn.Dense(
             self.projection_dim,
