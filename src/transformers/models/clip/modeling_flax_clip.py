@@ -461,15 +461,13 @@ class FlaxCLIPLayerScan(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.layers = nn.partitioning.scan_with_axes(
+        self.layers = nn.scan(
             FlaxCLIPEncoderLayer,
-            length=config.num_hidden_layers,
+            length=self.config.num_hidden_layers,
             in_axes=(nn.broadcast, nn.broadcast, nn.broadcast),
             out_axes=1,
             variable_axes={"params": 0, "intermediates": 0},
             split_rngs={"params": True},
-            axes_collections=("params", "params_axes"),
-            axis_name="stage_layers",
         )(self.config, self.dtype, True)
 
     def __call__(
@@ -766,15 +764,16 @@ class FlaxCLIPVisionPreTrainedModel(FlaxPreTrainedModel):
         if self.use_layer_scan:
             return self
         else:
-            px = self.params.unfreeze()
+            px = flax.core.frozen_dict.unfreeze(self.params)
             layers = px["vision_model"]["encoder"]["layers"]
             lnums = [int(s) for s in layers.keys()]
             lnums.sort()
             layers_in_order = [layers[str(i)] for i in lnums]
-            stacked_layers = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *pytrees)(*layers_in_order)
-            px["vision_model"]["encoder"]["layers"] = stacked_layers
+            stacked_layers = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *layers_in_order)
+            px["vision_model"]["encoder"]["layers"] = {"layers": stacked_layers}
             self._module = self.module_class(config=self.config, dtype=self.dtype, use_layer_scan=True)
             self._params = flax.core.frozen_dict.freeze(px)
+        return self
 
     def __call__(
         self,
