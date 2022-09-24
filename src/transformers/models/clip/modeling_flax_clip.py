@@ -366,6 +366,7 @@ class FlaxCLIPMLP(nn.Module):
 class FlaxCLIPEncoderLayer(nn.Module):
     config: Union[CLIPTextConfig, CLIPVisionConfig]
     dtype: jnp.dtype = jnp.float32
+    is_scan: bool = False
 
     def setup(self):
         self.self_attn = FlaxCLIPAttention(self.config, dtype=self.dtype)
@@ -402,7 +403,10 @@ class FlaxCLIPEncoderLayer(nn.Module):
         if output_attentions:
             outputs += attn_outputs[1:]
 
-        return outputs
+        if self.is_scan:
+            return outputs[0], outputs
+        else:
+            return outputs
 
 
 class FlaxCLIPLayerCollection(nn.Module):
@@ -452,12 +456,67 @@ class FlaxCLIPLayerCollection(nn.Module):
         )
 
 
-class FlaxCLIPEncoder(nn.Module):
+class FlaxCLIPLayerScan(nn.Module):
     config: Union[CLIPTextConfig, CLIPVisionConfig]
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.layers = FlaxCLIPLayerCollection(self.config, dtype=self.dtype)
+        self.layers = nn.partitioning.scan_with_axes(
+            FlaxCLIPEncoderLayer,
+            length=config.num_hidden_layers,
+            in_axes=(nn.broadcast, nn.broadcast, nn.broadcast),
+            out_axes=1,
+            variable_axes={"params": 0, "intermediates": 0},
+            split_rngs={"params": True},
+            axes_collections=("params", "params_axes"),
+            axis_name="stage_layers",
+        )(self.config, self.dtype, True)
+
+    def __call__(
+        self,
+        hidden_states,
+        attention_mask=None,
+        deterministic: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ):
+        last_hidden, carry = self.layers(
+            hidden_states,
+            attention_mask,
+            deterministic,
+            output_attentions,
+        )
+        hidden_states, *rest = carry
+        if not output_hidden_states:
+            hidden_states = None
+
+        if output_attentions:
+            all_attentions = rest[0]
+        else:
+            all_attentions = None
+
+        out = FlaxBaseModelOutput(
+            last_hidden_state=last_hidden,
+            hidden_states=hidden_states,
+            attentions=all_attentions,
+        )
+        if return_dict:
+            return out
+        else:
+            return (last_hidden,)
+
+
+class FlaxCLIPEncoder(nn.Module):
+    config: Union[CLIPTextConfig, CLIPVisionConfig]
+    dtype: jnp.dtype = jnp.float32
+    use_layer_scan: bool = False
+
+    def setup(self):
+        if self.use_layer_scan:
+            self.layers = FlaxCLIPLayerScan(self.config, dtype=self.dtype)
+        else:
+            self.layers = FlaxCLIPLayerCollection(self.config, dtype=self.dtype)
 
     def __call__(
         self,
@@ -481,10 +540,11 @@ class FlaxCLIPEncoder(nn.Module):
 class FlaxCLIPTextTransformer(nn.Module):
     config: CLIPTextConfig
     dtype: jnp.dtype = jnp.float32
+    use_layer_scan: bool = False
 
     def setup(self):
         self.embeddings = FlaxCLIPTextEmbeddings(self.config, dtype=self.dtype)
-        self.encoder = FlaxCLIPEncoder(self.config, dtype=self.dtype)
+        self.encoder = FlaxCLIPEncoder(self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
         self.final_layer_norm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
 
     def __call__(
@@ -535,11 +595,12 @@ class FlaxCLIPTextTransformer(nn.Module):
 class FlaxCLIPVisionTransformer(nn.Module):
     config: CLIPVisionConfig
     dtype: jnp.dtype = jnp.float32
+    use_layer_scan: bool = False
 
     def setup(self):
         self.embeddings = FlaxCLIPVisionEmbeddings(self.config, dtype=self.dtype)
         self.pre_layrnorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
-        self.encoder = FlaxCLIPEncoder(self.config, dtype=self.dtype)
+        self.encoder = FlaxCLIPEncoder(self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
         self.post_layernorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
 
     def __call__(
@@ -585,6 +646,7 @@ class FlaxCLIPVisionTransformer(nn.Module):
 class FlaxCLIPTextPreTrainedModel(FlaxPreTrainedModel):
     config_class = CLIPTextConfig
     module_class: nn.Module = None
+    use_layer_scan: bool = False
 
     def __init__(
         self,
@@ -595,7 +657,7 @@ class FlaxCLIPTextPreTrainedModel(FlaxPreTrainedModel):
         _do_init: bool = True,
         **kwargs
     ):
-        module = self.module_class(config=config, dtype=dtype, **kwargs)
+        module = self.module_class(config=config, dtype=dtype, use_layer_scan=self.use_layer_scan, **kwargs)
         super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype, _do_init=_do_init)
 
     def init_weights(self, rng: jax.random.PRNGKey, input_shape: Tuple, params: FrozenDict = None) -> FrozenDict:
@@ -665,6 +727,7 @@ class FlaxCLIPVisionPreTrainedModel(FlaxPreTrainedModel):
     config_class = CLIPVisionConfig
     main_input_name = "pixel_values"
     module_class: nn.Module = None
+    use_layer_scan: bool = False
 
     def __init__(
         self,
@@ -677,7 +740,7 @@ class FlaxCLIPVisionPreTrainedModel(FlaxPreTrainedModel):
     ):
         if input_shape is None:
             input_shape = (1, config.image_size, config.image_size, 3)
-        module = self.module_class(config=config, dtype=dtype, **kwargs)
+        module = self.module_class(config=config, dtype=dtype, use_layer_scan=self.use_layer_scan, **kwargs)
         super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype, _do_init=_do_init)
 
     def init_weights(self, rng: jax.random.PRNGKey, input_shape: Tuple, params: FrozenDict = None) -> FrozenDict:
@@ -736,6 +799,7 @@ class FlaxCLIPVisionPreTrainedModel(FlaxPreTrainedModel):
 class FlaxCLIPPreTrainedModel(FlaxPreTrainedModel):
     config_class = CLIPConfig
     module_class: nn.Module = None
+    use_layer_scan: bool = False
 
     def __init__(
         self,
@@ -748,7 +812,7 @@ class FlaxCLIPPreTrainedModel(FlaxPreTrainedModel):
     ):
         if input_shape is None:
             input_shape = ((1, 1), (1, config.vision_config.image_size, config.vision_config.image_size, 3))
-        module = self.module_class(config=config, dtype=dtype, **kwargs)
+        module = self.module_class(config=config, dtype=dtype, use_layer_scan=self.use_layer_scan, **kwargs)
         super().__init__(config, module, input_shape=input_shape, seed=seed, dtype=dtype, _do_init=_do_init)
 
     def init_weights(self, rng: jax.random.PRNGKey, input_shape: Tuple, params: FrozenDict = None) -> FrozenDict:
@@ -941,9 +1005,10 @@ class FlaxCLIPPreTrainedModel(FlaxPreTrainedModel):
 class FlaxCLIPTextModule(nn.Module):
     config: CLIPTextConfig
     dtype: jnp.dtype = jnp.float32
+    use_layer_scan: bool = False 
 
     def setup(self):
-        self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype)
+        self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
 
     def __call__(
         self,
@@ -998,9 +1063,10 @@ append_replace_return_docstrings(
 class FlaxCLIPVisionModule(nn.Module):
     config: CLIPVisionConfig
     dtype: jnp.dtype = jnp.float32
+    use_layer_scan: bool = False
 
     def setup(self):
-        self.vision_model = FlaxCLIPVisionTransformer(self.config, dtype=self.dtype)
+        self.vision_model = FlaxCLIPVisionTransformer(self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
 
     def __call__(
         self,
@@ -1056,6 +1122,7 @@ append_replace_return_docstrings(
 class FlaxCLIPModule(nn.Module):
     config: CLIPConfig
     dtype: jnp.dtype = jnp.float32
+    use_layer_scan: bool = False
 
     def setup(self):
         text_config = self.config.text_config
@@ -1065,8 +1132,8 @@ class FlaxCLIPModule(nn.Module):
         self.text_embed_dim = text_config.hidden_size
         self.vision_embed_dim = vision_config.hidden_size
 
-        self.text_model = FlaxCLIPTextTransformer(text_config, dtype=self.dtype)
-        self.vision_model = FlaxCLIPVisionTransformer(vision_config, dtype=self.dtype)
+        self.text_model = FlaxCLIPTextTransformer(text_config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
+        self.vision_model = FlaxCLIPVisionTransformer(vision_config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
 
         self.visual_projection = nn.Dense(
             self.projection_dim,
