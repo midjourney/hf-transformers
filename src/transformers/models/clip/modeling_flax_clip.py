@@ -762,6 +762,20 @@ class FlaxCLIPVisionPreTrainedModel(FlaxPreTrainedModel):
         else:
             return random_params
 
+    def convert_to_scan(self) -> Self:
+        if self.use_layer_scan:
+            return self
+        else:
+            px = self.params.unfreeze()
+            layers = px["vision_model"]["encoder"]["layers"]
+            lnums = [int(s) for s in layers.keys()]
+            lnums.sort()
+            layers_in_order = [layers[str(i)] for i in lnums]
+            stacked_layers = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *pytrees)(*layers_in_order)
+            px["vision_model"]["encoder"]["layers"] = stacked_layers
+            self._module = self.module_class(config=self.config, dtype=self.dtype, use_layer_scan=True)
+            self._params = flax.core.frozen_dict.freeze(px)
+
     def __call__(
         self,
         pixel_values,
