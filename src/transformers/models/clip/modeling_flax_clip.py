@@ -1075,7 +1075,7 @@ class FlaxCLIPTextModule(nn.Module):
     def setup(self):
         self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
         self.text_projection = nn.Dense(
-            self.config.projection_dim,
+            self.projection_dim,
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(0.02),
             use_bias=False,
@@ -1158,7 +1158,7 @@ class FlaxCLIPVisionModule(nn.Module):
             self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan
         )
         self.visual_projection = nn.Dense(
-            self.config.projection_dim,
+            self.projection_dim,
             dtype=self.dtype,
             kernel_init=jax.nn.initializers.normal(0.02),
             use_bias=False,
