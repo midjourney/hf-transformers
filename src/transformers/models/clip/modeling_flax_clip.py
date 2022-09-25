@@ -720,6 +720,35 @@ class FlaxCLIPTextPreTrainedModel(FlaxPreTrainedModel):
             rngs=rngs,
         )
 
+    def contrastive_encode(
+        self,
+        input_ids,
+        attention_mask=None,
+        position_ids=None,
+        params: dict = None,
+        **kwargs,
+    ):
+        if position_ids is None:
+            position_ids = jnp.broadcast_to(jnp.arange(jnp.atleast_2d(input_ids).shape[-1]), input_ids.shape)
+
+        if attention_mask is None:
+            attention_mask = jnp.ones_like(input_ids)
+
+        # Handle any PRNG if needed
+        rngs = {}
+        if dropout_rng is not None:
+            rngs["dropout"] = dropout_rng
+
+        return self.module.apply(
+            {"params": params or self.params},
+            jnp.array(input_ids, dtype="i4"),
+            jnp.array(attention_mask, dtype="i4"),
+            jnp.array(position_ids, dtype="i4"),
+            not train,
+            rngs=rngs,
+            method=self.module.contrastive_encode,
+        )
+
 
 class FlaxCLIPVisionPreTrainedModel(FlaxPreTrainedModel):
     config_class = CLIPVisionConfig
@@ -806,6 +835,29 @@ class FlaxCLIPVisionPreTrainedModel(FlaxPreTrainedModel):
             output_hidden_states,
             return_dict,
             rngs=rngs,
+        )
+
+    def contrastive_encode(
+        self,
+        pixel_values,
+        params: dict = None,
+        dropout_rng: jax.random.PRNGKey = None,
+        train: bool = False,
+        return_dict: Optional[bool] = None,
+    ):
+        pixel_values = jnp.transpose(pixel_values, (0, 2, 3, 1))
+
+        # Handle any PRNG if needed
+        rngs = {}
+        if dropout_rng is not None:
+            rngs["dropout"] = dropout_rng
+
+        return self.module.apply(
+            {"params": params or self.params},
+            jnp.array(pixel_values, dtype=jnp.float32),
+            not train,
+            rngs=rngs,
+            method=self.module.contrastive_encode,
         )
 
 
@@ -1022,6 +1074,12 @@ class FlaxCLIPTextModule(nn.Module):
 
     def setup(self):
         self.text_model = FlaxCLIPTextTransformer(self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan)
+        self.text_projection = nn.Dense(
+            self.projection_dim,
+            dtype=self.dtype,
+            kernel_init=jax.nn.initializers.normal(0.02),
+            use_bias=False,
+        )
 
     def __call__(
         self,
@@ -1042,6 +1100,23 @@ class FlaxCLIPTextModule(nn.Module):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+
+    def contrastive_encode(
+        self,
+        input_ids,
+        attention_mask,
+        position_ids,
+        deterministic: bool = True,
+    ):
+        out = self(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            deterministic=deterministic,
+        ).pooler_output
+        out = self.text_projection(out)
+        out /= jnp.linalg.norm(out, axis=-1, keepdims=True)
+        return out
 
 
 class FlaxCLIPTextModel(FlaxCLIPTextPreTrainedModel):
@@ -1082,6 +1157,12 @@ class FlaxCLIPVisionModule(nn.Module):
         self.vision_model = FlaxCLIPVisionTransformer(
             self.config, dtype=self.dtype, use_layer_scan=self.use_layer_scan
         )
+        self.visual_projection = nn.Dense(
+            self.projection_dim,
+            dtype=self.dtype,
+            kernel_init=jax.nn.initializers.normal(0.02),
+            use_bias=False,
+        )
 
     def __call__(
         self,
@@ -1098,6 +1179,19 @@ class FlaxCLIPVisionModule(nn.Module):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+
+    def contrastive_encode(
+        self,
+        pixel_values,
+        deterministic: bool = True,
+    ):
+        out = self(
+            pixel_values=pixel_values,
+            deterministic=deterministic,
+        ).pooler_output
+        out = self.visual_projection(out)
+        out /= jnp.linalg.norm(out, axis=-1, keepdims=True)
+        return out
 
 
 class FlaxCLIPVisionModel(FlaxCLIPVisionPreTrainedModel):
