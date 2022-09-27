@@ -679,6 +679,21 @@ class FlaxCLIPTextPreTrainedModel(FlaxPreTrainedModel):
         else:
             return random_params
 
+    def convert_to_scan(self):
+        if self.use_layer_scan:
+            return self
+        else:
+            px = flax.core.frozen_dict.unfreeze(self.params)
+            layers = px["text_model"]["encoder"]["layers"]
+            lnums = [int(s) for s in layers.keys()]
+            lnums.sort()
+            layers_in_order = [layers[str(i)] for i in lnums]
+            stacked_layers = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *layers_in_order)
+            px["text_model"]["encoder"]["layers"] = {"layers": stacked_layers}
+            self._module = self.module_class(config=self.config, dtype=self.dtype, use_layer_scan=True)
+            self._params = flax.core.frozen_dict.freeze(px)
+        return self
+
     def __call__(
         self,
         input_ids,
@@ -850,6 +865,30 @@ class FlaxCLIPPreTrainedModel(FlaxPreTrainedModel):
             return freeze(unflatten_dict(params))
         else:
             return random_params
+
+    def convert_to_scan(self):
+        if self.use_layer_scan:
+            return self
+        else:
+            px = flax.core.frozen_dict.unfreeze(self.params)
+
+            layers = px["text_model"]["encoder"]["layers"]
+            lnums = [int(s) for s in layers.keys()]
+            lnums.sort()
+            layers_in_order = [layers[str(i)] for i in lnums]
+            stacked_layers = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *layers_in_order)
+            px["text_model"]["encoder"]["layers"] = {"layers": stacked_layers}
+
+            layers = px["vision_model"]["encoder"]["layers"]
+            lnums = [int(s) for s in layers.keys()]
+            lnums.sort()
+            layers_in_order = [layers[str(i)] for i in lnums]
+            stacked_layers = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *layers_in_order)
+            px["vision_model"]["encoder"]["layers"] = {"layers": stacked_layers}
+
+            self._module = self.module_class(config=self.config, dtype=self.dtype, use_layer_scan=True)
+            self._params = flax.core.frozen_dict.freeze(px)
+        return self
 
     def __call__(
         self,
