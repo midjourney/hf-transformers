@@ -382,6 +382,7 @@ class FlaxCLIPEncoderLayer(nn.Module):
         output_attentions: bool = False,
     ):
         residual = hidden_states
+        dt = hidden_states.dtype
 
         hidden_states = self.layer_norm1(hidden_states)
         attn_outputs = self.self_attn(
@@ -402,6 +403,8 @@ class FlaxCLIPEncoderLayer(nn.Module):
 
         if output_attentions:
             outputs += attn_outputs[1:]
+
+        outputs = jax.tree_util.tree_map(lambda x: jnp.asarray(x, dtype=dt), outputs)
 
         if self.is_scan:
             return outputs[0], outputs
