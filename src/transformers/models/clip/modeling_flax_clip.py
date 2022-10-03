@@ -221,12 +221,12 @@ class FlaxCLIPVisionEmbeddings(nn.Module):
         batch_size, height, width, channels = patch_embeds.shape
         patch_embeds = jnp.reshape(patch_embeds, (batch_size, height * width, channels))
 
-        class_embeds = jnp.expand_dims(self.class_embedding, axis=(0, 1))
+        class_embeds = self.class_embedding[None, None]
         class_embeds = jnp.tile(class_embeds, (batch_size, 1, 1))
         embeddings = jnp.concatenate([class_embeds, patch_embeds], axis=1)
         with jax.ensure_compile_time_eval():
             num_positions = self.num_patches + 1
-            position_ids = jnp.expand_dims(jnp.arange(0, num_positions, dtype="i4"), axis=0)
+            position_ids = jnp.arange(0, num_positions, dtype="i4")[None]
         embeddings = embeddings + self.position_embedding(position_ids)
         return embeddings
 
