@@ -330,9 +330,9 @@ class FlaxCLIPAttention(nn.Module):
             dropout_rng=dropout_rng,
             dropout_rate=self.dropout,
             deterministic=deterministic,
-            dtype=self.dtype,
+            dtype=jnp.float32,
             precision=None,
-        )
+        ).astype(self.dtype)
 
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value)
         attn_output = self._merge_heads(attn_output)
