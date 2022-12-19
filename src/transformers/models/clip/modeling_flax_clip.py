@@ -34,6 +34,17 @@ from ...modeling_flax_utils import (
 )
 from ...utils import ModelOutput, add_start_docstrings, logging
 from .configuration_clip import CLIPConfig, CLIPTextConfig, CLIPVisionConfig
+import pycontexts
+
+def sharding_constraint(x, axes):
+    if pycontexts.get("hf_pjit"):
+        return nn.partitioning.with_sharding_constraint(x, axes)
+    else:
+        return x
+
+def sharding_constraints(*x, axes):
+    return tuple(sharding_constraint(x, axes) for x in x)
+
 
 
 logger = logging.get_logger(__name__)
@@ -297,9 +308,7 @@ class FlaxCLIPAttention(nn.Module):
         key = self._split_heads(key)
         value = self._split_heads(value)
 
-        query = nn.partitioning.with_sharding_constraint(query, ("batch", "seq", "heads", "dqkv"))
-        key = nn.partitioning.with_sharding_constraint(key, ("batch", "seq", "heads", "dqkv"))
-        value = nn.partitioning.with_sharding_constraint(value, ("batch", "seq", "heads", "dqkv"))
+        query, key, value = sharding_constraints(query, key, value, axes=("batch", "seq", "heads", "dqkv"))
 
         causal_attention_mask = None
         if self.causal:
@@ -337,13 +346,13 @@ class FlaxCLIPAttention(nn.Module):
             dtype=jnp.float32,
             precision=None,
         ).astype(self.dtype)
-        attn_weights = nn.partitioning.with_sharding_constraint(attn_weights, ("batch", "heads", "lq", "lkv"))
+        attn_weights = sharding_constraint(attn_weights, ("batch", "heads", "lq", "lkv"))
 
         attn_output = jnp.einsum("...hqk,...khd->...qhd", attn_weights, value)
-        attn_output = nn.partitioning.with_sharding_constraint(attn_output, ("batch", "seq", "heads", "dqkv"))
+        attn_output = sharding_constraint(attn_output, ("batch", "seq", "heads", "dqkv"))
         attn_output = self._merge_heads(attn_output)
         attn_output = self.out_proj(attn_output)
-        attn_output = nn.partitioning.with_sharding_constraint(attn_output, ("batch", "seq", "features"))
+        attn_output = sharding_constraint(attn_output, ("batch", "seq", "features"))
 
         outputs = (attn_output, attn_weights) if output_attentions else (attn_output,)
         return outputs
@@ -489,7 +498,7 @@ class FlaxCLIPLayerScan(nn.Module):
         output_hidden_states: bool = False,
         return_dict: bool = True,
     ):
-        hidden_states = nn.partitioning.with_sharding_constraint(hidden_states, ("batch", "seq", "features"))
+        hidden_states = sharding_constraint(hidden_states, ("batch", "seq", "features"))
         last_hidden, carry = self.layers(
             hidden_states,
             attention_mask,
@@ -536,7 +545,7 @@ class FlaxCLIPEncoder(nn.Module):
         output_hidden_states: bool = False,
         return_dict: bool = True,
     ):
-        inputs_embeds = nn.partitioning.with_sharding_constraint(inputs_embeds, ("batch", "seq", "features"))
+        inputs_embeds = sharding_constraint(inputs_embeds, ("batch", "seq", "features"))
         return self.layers(
             hidden_states=inputs_embeds,
             attention_mask=attention_mask,
