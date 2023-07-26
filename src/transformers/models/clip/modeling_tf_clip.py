@@ -649,9 +649,8 @@ class TFCLIPVisionTransformer(tf.keras.layers.Layer):
             training=training,
         )
 
-        sequence_output = encoder_outputs[0]
+        sequence_output = self.post_layernorm(inputs=encoder_outputs[0])
         pooled_output = sequence_output[:, 0, :]
-        pooled_output = self.post_layernorm(inputs=pooled_output)
 
         if not return_dict:
             return (sequence_output, pooled_output) + encoder_outputs[1:]
